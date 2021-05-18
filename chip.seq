@@ -1,0 +1,1291 @@
+#! /bin/bash 
+#Color scheme
+RED='\033[0;31m'
+YEL='\033[1;33m'
+BLU='\033[0;34m'
+GRE='\033[0;32m'
+CYA='\033[0;36m'
+NC='\033[0m' # No Color
+
+
+echo ""
+V_ALL="Chip-seq All-in-one_1.6.2"; 
+echo -e "${YEL}Welcome! The version of the app is: $V_ALL"
+V="Universal Sequence Trimming_3.0"; Author="RBY"; SignDate="July 30 2020";
+echo "";
+echo "The version of this pipeline is: $V.";
+echo -e "$Author, $SignDate \n${NC}";
+echo -e "modified by Jason Ding in Dec.30th, 2020"
+function displaytime {
+  local T=$1
+  local D=$((T/60/60/24))
+  local H=$((T/60/60%24))
+  local M=$((T/60%60))
+  local S=$((T%60))
+  (( $D > 0 )) && printf '%d days ' $D
+  (( $H > 0 )) && printf '%d hours ' $H
+  (( $M > 0 )) && printf '%d minutes ' $M
+  (( $D > 0 || $H > 0 || $M > 0 )) && printf 'and '
+  printf '%d seconds\n' $S
+}
+
+
+
+
+
+#Define variables here (universal):
+
+HOME_SCRIPTS="/mnt/d/SEQRESOURCE/scripts/chipseq"
+RESOURCE="/mnt/d/SEQRESOURCE/mm10_index/chipseq"
+APP_PATH="/mnt/d/SEQRESOURCE/APPs"
+INPUT=$(pwd)
+OUTPUT=$(pwd)
+SOFTWARE=$APP_PATH
+
+#End of variable definition.
+
+
+
+echo -e "${CYA}Please set the input directory for reading the source fasta files:${NC}"
+echo -e "${CYA}Modify the default input sample folder if needed, press <ENTER> to confirm:${NC}"
+read -e -p "" -i "$INPUT" INPUT
+echo -e "${GRE}Confirmed: $INPUT\n${NC}"
+cd $INPUT
+
+
+echo -e "${CYA}Please set the output directory:${NC}"
+echo -e "${CYA}Modify the default output sample folder if needed, press <ENTER> to confirm:${NC}"
+read -e -p "" -i "$OUTPUT" OUTPUT
+echo -e "${GRE}Confirmed: $OUTPUT\n${NC}"
+
+CHOICE="y"
+echo -e "${CYA}Would you like to run zcat the fastq files of two batches? Enter y to proceed or n to skip the process:${NC}"
+read -e -p "" -i $CHOICE CHOICE
+echo -e "${GRE}The choice is $CHOICE\n${NC}"
+case $CHOICE in
+	"n")
+		echo -e "${CYA}zcat fastq files process escaped.${NC}"
+		;;	
+	"y")
+		Author="DJY"; SignDate="Dec 28 2020";
+		echo -e "$Author, $SignDate \n";
+		rm *gz bat*/mnt/d/resources/mm10/chipseq
+		dir_bat1=$(ls -l -A|awk  '{print $9}'|sed -n '2p')
+		dir_bat2=$(ls -l -A|awk  '{print $9}'|sed -n '3p')
+		ls -l ./${dir_bat1}/*gz|awk '{print $9}'|awk -F '_L' '{print $1}'|awk -F '/' '{print $3}'|sort|uniq > batch1.txt
+		ls -l ./${dir_bat2}/*gz|awk '{print $9}'|awk -F '_L' '{print $1}'|awk -F '/' '{print $3}'|sort|uniq > batch2.txt
+		samp_to_zcat=$(sort batch1.txt batch2.txt|uniq -d)
+		ln -s ./*/*gz .
+		for i in ${samp_to_zcat[@]}
+		do
+			zcat ./${dir_bat1}/${i}*R1.fastq.gz ./${dir_bat2}/${i}*R1.fastq.gz > ./${i}.R1.fastq
+			gzip ./${i}.R1.fastq
+			zcat ./${dir_bat1}/${i}*R2.fastq.gz ./${dir_bat2}/${i}*R2.fastq.gz > ./${i}.R2.fastq
+			gzip ./${i}.R2.fastq 
+		done
+		;;
+	*)
+		echo -e "${YEL}Invalid entry, quality evaluation skipped.${NC}"
+		;;
+esac
+
+rename "s/R1/R_1/" *.gz
+rename "s/R2/R_2/" *.gz
+
+
+
+
+CHOICE="y"
+echo -e "${CYA}Would you like to run fastqc to evaluate the quality of the raw sequences? Enter y to proceed or n to skip the process:${NC}"
+read -e -p "" -i $CHOICE CHOICE
+echo -e "${GRE}The choice is $CHOICE\n${NC}"
+case $CHOICE in
+	"n")
+		echo -e "${CYA}Quality evaluation by fastqc escaped.${NC}"
+		;;
+		
+	"y")
+		if [ ! -d $OUTPUT/Quality ];then
+			mkdir -p $OUTPUT/Quality
+		fi
+		
+		for FILE in ${INPUT}/*.gz
+		do
+			fastqc --outdir $OUTPUT/Quality $FILE
+		done
+		;;
+	*)
+		echo -e "${YEL}Invalid entry, quality evaluation skipped.${NC}"
+		;;
+esac
+
+
+
+
+
+cd $INPUT
+echo -e "${YEL}=========================================================================="
+echo -e "    ATTENTION: The pair-end fasta sequence should be named after:"
+echo -e "    '*_1.*.gz' and '*_2.*.gz', where * represents any character(s)."
+echo "=========================================================================="
+echo -e "\n${CYA}Are the names of fasta files fit to this rule? ${NC}\n"
+read -e -t 60 -p  "Press <enter> to proceed or <Ctrl+C> to quit."
+
+#=================================================
+if [ ! -f "NexteraPE-PE.fa" ];then
+cp ${HOME_SCRIPTS}/NexteraPE-PE.fa ./
+fi
+if [ ! -d $OUTPUT/Trim ];then
+  mkdir -p $OUTPUT/Trim
+fi
+if [ ! -d $OUTPUT/Unpaired ];then
+  mkdir -p $OUTPUT/Unpaired
+fi
+
+if [ ! -d $OUTPUT/Log ];then
+  mkdir -p $OUTPUT/Log
+fi
+#=================================================
+CHOICE="tg"
+echo -e "${CYA}Which app do you prefer trimming the sequence? Enter tg to use trim_galore or tm to use trimmomatic or n to skip the trimmiming process:${NC}"
+read -e -p "" -i $CHOICE CHOICE
+echo -e "${GRE}The choice is $CHOICE\n${NC}"
+
+case $CHOICE in
+	
+	"tg")
+		PARAMETER="--quality 20 --stringency 3 --length 20"
+		echo -e "${GRE}Modify the current parameters for trim_galore trimming and press ENTER${NC}"
+		read -e -p "" -i "$PARAMETER" PARAMETER
+		echo -e "========================================================\n"
+		echo -e "${YEL}Cofirmed parameter for trimming:\n$PARAMETER\n${NC}"
+		echo -e "========================================================"
+		read -p "Press <enter> to confirm or <Ctrl+C> to quit."
+		
+		date;
+
+		SECONDS=0
+
+		if [ $(ls *_1*.gz|wc -l) != $(ls *_2*.gz|wc -l) ]
+		then
+		  #SE parameter for bowtie2 alignment
+		  echo -e "${CYA}\nPaired samples not found, applying settings for single-end alignment...\n${NC}"
+		  read -t 60 -p "Press <enter> to contitue or <Ctrl+C> to quit."
+		  #Put single-ended analysis script here!
+		  n=0;
+		  for FILE1 in *.gz
+		  do 
+			((n++))
+			CORE=$(echo $FILE1|sed s#_1.*.gz##);
+			echo  "";
+			echo -e "${CYA}Sample $n:${NC}  $CORE";
+			echo "Processing: $FILE1";	  			
+			echo "================================"
+			#bowtie2 -p 8 -x $INDEX -U $FILE1 -S 2> Log/$CORE.log | samtools view -@ 8 -uS |samtools sort -@ 8 -O BAM -o Temp/$CORE.sorted.bam;
+			#samtools index Temp/$CORE.sorted.bam
+			trim_galore $PARAMETER -j 8 $FILE1 --gzip -o $OUTPUT/Trim 2>&1 | tee $OUTPUT/Log/Trim.$CORE.log
+			#echo "Done"
+		  done
+
+		elif [ $(ls *_1*.gz|wc -l) -eq $(ls *_2*.gz|wc -l) ]
+		then 
+		  #PE parameter for bowtie2 alignment
+		  echo -e "${CYA}\nApplying setting for paired-end alignment...\n${NC}"
+		  read -t 60 -p "Press <enter> to contitue or <Ctrl+C> to quit."
+		  #Put paired-ended analysis script here!
+		  n=0;
+		  for FILE1 in *_1*.gz
+			do 
+			((n++))
+			CORE=$(echo $FILE1|sed s#_1.*.gz##);
+			FILE2=$(echo $FILE1|sed s#_1.#_2.#);
+			echo  "";
+			echo -e "${CYA}Sample $n:${NC}  $CORE";
+			echo -e "Processing: $FILE1";
+			echo -e "The pair-end counterpart is: $FILE2 \n";			
+			
+			trim_galore $PARAMETER -j 8 --paired $FILE1 $FILE2 --gzip -o $OUTPUT/Trim 2>&1 | tee $OUTPUT/Log/Trim.$CORE.log
+		  done  
+				  
+		else
+		  echo -e "${RED}\nSamples are not paired correctly! Please check and re-run the program.\n{NC}"	
+		  exit 1
+		fi
+
+
+		echo -e "${CYA}Time elapsed since trimming:${NC}"
+		displaytime $SECONDS
+		echo -e "${CYA}All sequences have been trimmed.\n${NC}"
+		echo -e "${CYA}Done! Trimmed sequences are saved in ${GRE}$OUTPUT/Trim${NC}"
+		;;
+	
+	"tm")
+		ADAPTER=$(ls|grep *.fa);
+		ADAPTER=${ADAPTER%.fa};
+		INDEX="mm10.chr";
+
+		echo -e "${CYA}$ADAPTER (.fa) is the adapter sequence file;${NC}"
+
+		PARAMETER="ILLUMINACLIP:NexteraPE-PE.fa:2:30:12:1:TRUE HEADCROP:6 MAXINFO:40:0.4 MINLEN:30"
+		echo -e "${YEL}Attention! this parameter is curently only working for PE trimming\n${NC}"
+		echo -e "${CYA}Modify the current parameters for trimmomatic and press <ENTER>:${NC}"
+		read  -e -p "" -i "$PARAMETER" PARAMETER
+		echo -e "========================================================\n"
+		echo -e "${YEL}Cofirmed parameter for trimming:\n$PARAMETER\n${NC}"
+		echo -e "========================================================"
+		read -p "Press <enter> to confirm or <Ctrl+C> to quit."
+
+		date;
+
+		SECONDS=0
+
+		if [ $(ls *_1*.gz|wc -l) != $(ls *_2*.gz|wc -l) ]
+		then
+		  #SE parameter for bowtie2 alignment
+		  echo -e "${YEL}\nPaired samples not found, applying settings for single-end alignment...\n${NC}"
+		  read -t 60 -p "Press <enter> to contitue or <Ctrl+C> to quit."
+		  #Put single-ended analysis script here!
+		  n=0;
+		  for FILE1 in *.gz
+		  do 
+			((n++))
+			CORE=$(echo $FILE1|sed s#_1.*.gz##);
+			echo  "";
+			echo -e "${CYA}Sample $n:${NC}  $CORE";
+			echo "Processing: $FILE1";	  
+			echo "================================"
+			echo -e "${YEL}CAUTION!!The single-end trimming is underconstruction, parameters should be entered by modifing the script.${NC}"
+			echo "================================"
+			#bowtie2 -p 8 -x $INDEX -U $FILE1 -S 2> Log/$CORE.log | samtools view -@ 8 -uS |samtools sort -@ 8 -O BAM -o Temp/$CORE.sorted.bam;
+			#samtools index Temp/$CORE.sorted.bam
+			java -jar $APP_PATH/trimmomatic.jar SE -threads 8 $FILE1 $OUTPUT/Trim/Tr.SE.$FILE1 ILLUMINACLIP:TruSeq3-SE.fa:2:30:12:1 HEADCROP:6 MAXINFO:40:0.4 MINLEN:30 2>&1 | tee $OUTPUT/Log/Trim.$CORE.log
+			
+			#echo "Done"
+		  done
+
+		elif [ $(ls *_1*.gz|wc -l) -eq $(ls *_2*.gz|wc -l) ]
+		then 
+		  #PE parameter for bowtie2 alignment
+		  echo -e "${CYA}\nApplying setting for paired-end alignment...\n${NC}"
+		  read -t 60 -p "Press <enter> to contitue or <Ctrl+C> to quit."
+		  #Put paired-ended analysis script here!
+		  n=0;
+		  for FILE1 in *_1*.gz
+			do 
+			((n++))
+			CORE=$(echo $FILE1|sed s#_1.*.gz##);
+			FILE2=$(echo $FILE1|sed s#_1.#_2.#);
+			echo  "";
+			echo -e "${CYA}Sample $n:${NC}  $CORE";
+			echo -e "Processing: $FILE1";
+			echo -e "The pair-end counterpart is: $FILE2 \n";			
+			
+			java -jar $APP_PATH/trimmomatic.jar PE -threads 8 $FILE1 $FILE2 $OUTPUT/Trim/Tr.$FILE1 $OUTPUT/Unpaired/Tr.unpaired.$FILE1 $OUTPUT/Trim/Tr.$FILE2 $OUTPUT/Unpaired/Tr.unpaired.$FILE2 $PARAMETER 2>&1 | tee $OUTPUT/Log/Trim.$CORE.log
+			
+		  done  
+				 
+		else
+		  echo -e "${RED}\nSamples are not paired correctly! Please check and re-run the program.\n${NC}"	
+		  exit 1
+		fi
+
+		rm NexteraPE-PE.fa
+
+
+
+		echo -e "${CYA}Time elapsed since trimming:${NC}"
+		displaytime $SECONDS
+		echo -e "${CYA}All sequences have been trimmed.\n${NC}"
+		echo -e "${CYA}Done! Trimmed sequences are saved in${GRE} $OUTPUT/Trim${NC}"
+		;;
+	"n")
+		echo -e "${CYA}Sequence trimming skipped.${YEL}"
+		Trimmed="${INPUT}"	
+		;;
+
+	*)
+		echo -e "${YEL}Invalid entry, sequence trimming skipped.${YEL}"
+		;;
+esac
+
+
+
+
+CHOICE="y"
+echo -e "${CYA}Would you like to run fastqc to evaluate the quality of the trimmed sequences? Enter y to proceed or n to skip the process:${NC}"
+read -e -p "" -i $CHOICE CHOICE
+echo -e "${CYA}The choice is $CHOICE\n${NC}"
+case $CHOICE in
+	"n")
+		echo -e "${CYA}Quality evaluation by fastqc escaped.${NC}"
+		;;
+		
+	"y")
+		if [ ! -d $OUTPUT/Quality ];then
+			mkdir -p $OUTPUT/Quality
+		fi
+		
+		for FILE in $OUTPUT/Trim/*.gz
+		do
+			fastqc --outdir $OUTPUT/Quality $FILE
+		done
+		;;
+	*)
+		echo "${YEL}Invalid entry, quality evaluation skipped.${NC}"
+		;;
+esac
+
+
+
+
+	
+
+
+#================================================================================
+#================================================================================
+#================================================================================
+CHOICE="y"
+echo -e "${CYA}Would you like to run sequence alignment module (bowtie2)? (y for yes or n for skip):${NC}"
+read -e -p "" -i $CHOICE CHOICE
+echo -e "${CYA}The choice is $CHOICE\n${NC}"
+
+case $CHOICE in
+	
+	"y")
+
+		V="Universal Sequence Alignment_2.0"; Author="RBY"; SignDate="Dec.13.2019";
+		echo "Welcome!";
+		echo "The version of this pipeline is: $V.";
+		echo -e "$Author, $SignDate \n";
+
+		#Around 40 minutes per sample (PE)
+
+		Trimmed=${OUTPUT}/Trim
+		echo -e "${CYA}Modify the location of input sequences (trimmed), press <ENTER> to confirm (recommended to keep default value):${NC}"
+		read -e -p "" -i $Trimmed Trimmed
+		echo -e "${CYA}Location of input sequences: ${GRE}$Trimmed.${NC}"
+		read -p  "Press <enter> to proceed or <Ctrl+C> to quit."
+		echo ""
+		echo -e "=========================================================================="
+		echo -e "${YEL}    ATTENTION: The pair-end fasta sequence should be named after:"
+		echo -e "${YEL}    '*_1.*.gz' and '*_2.*.gz', where * represents any character(s)."
+		echo -e "==========================================================================${NC}"
+		cd $Trimmed
+			i=0;
+			while read line
+			do 
+			files[$i]="${line}"
+			((i++))
+			done < <(find -name "*.gz")
+			echo -e "Current sample names are:"
+			for (( n=0;n<i;n++ ));do echo -e "${files[$n]}";done
+			echo -e "\nAre these files fit the rule?\n"
+			read -t 30 -p  "Press <enter> to confirm or <Ctrl+C> to quit. "
+			echo ""
+		
+		
+		#ENSEMBL GENOME version:
+		ENSEMBL_RELEASE=84
+		read -t 30 -e -p "Modify the ENSEMBLE release version if required and press <ENTER> to confirm (recommended to keep default value):" -i $ENSEMBL_RELEASE ENSEMBL_RELEASE
+		echo -e "The currently used ENSEMBL release version is: $ENSEMBL_RELEASE. \n"
+		echo -e "====================================================================\n"
+
+		read  -t 30 -e -p "Path to the genomic resources (genome, indexes, annoation), press <ENTER> to confirm:" -i "$RESOURCE" RESOURCE
+		echo -e "Path for alignment resource is:\n$RESOURCE\n"
+		echo -e "====================================================================\n"
+		read -t 30 -p "Press <enter> to confirm or <Ctrl+C> to quit."
+
+		#================================START OF RESOURCE AVAILIBILITYCHECK===========================
+		#START OF RESOURCE AVAILIBILITY CHECK
+
+
+		cd $RESOURCE
+		echo -e "Checking resources in $RESOURCE\n"
+		INDECES="*.bt2" 
+		COUNT_INDECES=$(ls $INDECES|wc -l)
+		if [ $COUNT_INDECES != 0 ] 
+			then echo "1. index.bt2(s) : OK." 
+			else echo -e "${YEL}1. index.bt2 : NOT exist!!" 
+				 echo -e "Would you like to download the genome (if not exist) and build it now? (~700MB to be download and 30min to build) \n ${NC}"
+				 read -t 30 -p "Press <enter> to download or <Ctrl+C> to quit."
+
+			# Downloads sequence for the GRCm38 release 81 version of M. Musculus (mouse) from
+			# Ensembl.
+			#
+			# By default, this script builds and index for just the base files,
+			# since alignments to those sequences are the most useful.  To change
+			# which categories are built by this script, edit the CHRS_TO_INDEX
+			# variable below.
+
+
+			ENSEMBL_GRCm38_BASE=ftp://ftp.ensembl.org/pub/release-${ENSEMBL_RELEASE}/fasta/mus_musculus/dna
+
+			get() {
+				file=$1
+				if ! wget --version >/dev/null 2>/dev/null ; then
+					if ! curl --version >/dev/null 2>/dev/null ; then
+						echo "Please install wget or curl somewhere in your PATH"
+						exit 1
+					fi
+					curl -o `basename $1` $1
+					return $?
+				else
+					wget $1
+					return $?
+				fi
+			}
+
+			BOWTIE2_BUILD_EXE=./bowtie2-build
+				if [ ! -x "$HISAT2_BUILD_EXE" ] ; then
+					if ! which bowtie2-build ; then
+						echo "Could not find bowtie2-build in current directory or in PATH"
+						exit 1
+					else
+						BOWTIE2_BUILD_EXE=`which bowtie2-build`
+					fi
+				fi
+
+			
+
+			F=Mus_musculus.GRCm38.dna.primary_assembly.fa
+			F2=genome.fa
+				if [ ! -f $F  ]&&[ ! -f $F2  ] ; then
+					get ${ENSEMBL_GRCm38_BASE}/$F.gz || (echo "Error getting $F" && exit 1)
+					gunzip $F.gz || (echo "Error unzipping $F" && exit 1)
+					mv $F genome.fa
+				fi
+
+				CMD="${BOWTIE2_BUILD_EXE} genome.fa genome --threads 8"
+				echo Running $CMD
+				if $CMD ; then
+					echo "genome index built; you may remove fasta files"
+				else
+					echo "Index building failed; see error message"
+				fi
+
+		fi
+		#=================================================
+
+		FILE2="*.gtf" 
+		COUNT2=$(ls $FILE2|wc -l)
+		if [ $COUNT2 != 0 ] ;then 
+			echo "2. chromosome_annotation.gtf : OK." 
+		else 
+			echo "2. chromosome_annotation.gtf : NOT exist!! Download annotation file at ftp://ftp.ensembl.org/pub/" 
+			echo -e "Would you like to download it now? (~30MB to be download and it takes ~2min)\n"
+			read -t 30 -p "Press <enter> to download or <Ctrl+C> to quit."
+			wget "ftp://ftp.ensembl.org/pub/release-$ENSEMBL_RELEASE/gtf/mus_musculus/Mus_musculus.GRCm38.$ENSEMBL_RELEASE.chr.gtf.gz"
+			gzip -d Mus_musculus.GRCm38.$ENSEMBL_RELEASE.chr.gtf.gz
+			echo "DONE!"
+		fi
+
+		read -t 30 -p "Resources check finished, press <enter> to proceed or <Ctrl+C> to quit."
+		#=================================================
+		if [ ! -d $OUTPUT/Align ];then
+		  mkdir -p $OUTPUT/Align
+		fi
+		if [ ! -d $OUTPUT/Log ];then
+		  mkdir -p $OUTPUT/Log
+		fi
+		#=================================================
+
+
+
+		#ls |grep _1.*gz |sed -e s#^#Assemble/# -e s#_[12].*gz#.gtf# >Align/mergelist.temp;
+		cd $RESOURCE
+
+			GENOME=$(ls $RESOURCE/*.fa)
+			GENOME=${GENOME%.fa};
+			export BOWTIE2_INDEXES=$RESOURCE
+			INDEX="mm10.chr"
+			ANNO=$(ls $RESOURCE/*.gtf)
+			#READCOUNTS=$(ls|grep *.py);
+			echo -e "=============================================="
+			echo "Genome file:$GENOME (.fa)"
+			echo "Reference annoation:$ANNO;"
+			#wget "https://ccb.jhu.edu/software/stringtie/dl/prepDE.py";
+			#echo "$READCOUNTS is the python script for readcount extraction.";
+			
+		if [ ! -d $OUTPUT/Log ];then
+		  mkdir -p $OUTPUT/Log
+		fi
+
+
+		#Create links to indices of mm10 genome!
+		cd $RESOURCE
+		for FILE in *.bt2
+		do
+			ln -s $RESOURCE/${FILE} $Trimmed
+		done
+
+		cd $Trimmed
+		INDEX="mm10.chr";	
+			count=$(find *_2*.gz -type f|wc -l)
+			if [ $(ls *_2*.gz|wc -l) -eq 0 ] || [ $(ls *_1*.gz|wc -l) -eq 0 ] ;then
+			  #SE parameter for bowtie2 alignment
+			  echo -e "${YEL}\nPaired samples not found, applying settings for single-end alignment...\n${NC}"
+			  read -t 30 -p "Press <enter> to contitue or <Ctrl+C> to quit."
+			  
+				PARAMETER="--sensitive"
+				echo -e "${CYA}Enter extra parameters here if required and press <ENTER>:${NC}"
+				read  -e -p "" -i "$PARAMETER" PARAMETER
+				echo -e "========================================================\n"
+				echo -e "${GRE}Extra parameter for sequence alignment is:\n$PARAMETER\n${NC}"
+				echo -e "========================================================\n"
+			  
+			  #Put single-ended analysis script here!
+			  n=0;
+			  for FILE1 in *.gz
+			  do 
+				((n++))
+				CORE=$(echo $FILE1|sed s#_1.*.gz##);
+				echo  "";
+				echo -e "${CYA}Sample $n:${NC}  $CORE";
+				echo "Processing: $FILE1";	  
+				bowtie2 $PARAMETER -p 7 -x $INDEX -U $FILE1 2> $OUTPUT/Log/Align.$CORE.log | samtools view -@ 8 -uS |samtools sort -@ 7 -O BAM -o $OUTPUT/Align/${CORE}.SE.bam;
+				samtools index $OUTPUT/Align/$CORE.SE.bam
+			  done
+
+
+
+			elif [ $(ls *_1*.gz|wc -l) -eq $(ls *_2*.gz|wc -l) ]
+			then 
+			  #PE parameter for bowtie2 alignment
+			  echo -e "${CYA}\nApplying setting for paired-end alignment...\n${NC}"
+			  read -t 30 -p "Press <enter> to contitue or <Ctrl+C> to quit."
+			  #Put paired-ended analysis script here!
+				
+				PARAMETER="-X 1000 --sensitive "
+				echo -e "${CYA}Enter extra parameters here if required and press <ENTER>:${NC}"
+				read  -e -p "" -i "$PARAMETER" PARAMETER
+				echo -e "========================================================\n"
+				echo -e "${GRE}Extra parameter for sequence alignment is:\n$PARAMETER\n${NC}"
+				echo -e "========================================================\n"
+				
+			  n=0;
+			  for FILE1 in *_1*.gz
+				do 
+				((n++))
+				CORE=$(echo $FILE1|sed s#_1.*.gz##);
+				FILE2=$(echo $FILE1|sed s#_1#_2#g);
+				echo  "";
+				echo -e "${CYA}Sample $n:${NC}  $CORE";
+				echo "Processing: $FILE1";
+				echo -e "The pair-end counterpart is: $FILE2 \n";			
+				bowtie2 $PARAMETER -p 7 -x $INDEX -1 $FILE1 -2 $FILE2  2> $OUTPUT/Log/Align.$CORE.log | samtools view -@ 8 -uS |samtools sort -@ 8 -O BAM -o $OUTPUT/Align/$CORE.bam;
+				samtools index $OUTPUT/Align/$CORE.bam
+			  #samtools view -@ 8 -uS Align/$CORE.sam | samtools sort -@ 8 -O BAM -o Align/$CORE.sorted.bam;
+			  #stringtie Align/$CORE.sorted.bam -e -v -p 8 -G $ANNO -o Assemble/$CORE.gtf;--un-conc-gz $OUTPUT/Align/${CORE}_unmapped.fq.gz;
+			  #1hr per sample pair (1GB file x2)
+			  done  
+					  
+			else
+			  echo -e "${RED}\nSamples are not paired correctly! Please check and re-run the program.\n${NC}"	
+			  exit 1
+			fi
+		rm *.bt2
+
+		
+
+		echo -e "${CYA}Time elapsed since alignment:${NC}"
+		displaytime $SECONDS
+		echo -e "${GRE}Done.\n${NC}"
+	;;
+	
+	"n")
+		echo -e "${CYA}Sequence alignment escaped.${NC}"
+		;;
+	*)
+		echo -e "${YEL}Invalid entry, Sequence alignment escaped.${NC}"
+		;;
+	esac
+
+#================================================================================
+#================================================================================
+CHOICE="y"
+echo -e "${CYA}Would you like to remove low quality and duplicated alignments ? (y for yes or n for skip):${NC}"
+read -e -p "" -i $CHOICE CHOICE
+echo -e "${CYA}The choice is $CHOICE\n${NC}"
+
+case $CHOICE in
+	
+	"y")
+		V="picard.jar MarkDuplicates V2.23.8"; Author="DJY"; SignDate="Dec 30 2020";
+		echo "The version of this pipeline is: $V.";
+		echo -e "$Author, $SignDate \n";
+
+		#=================================================
+		if [ ! -d $OUTPUT/Spikein ];then
+		  mkdir -p $OUTPUT/Spikein
+		fi
+		if [ ! -d $OUTPUT/Log ];then
+		  mkdir -p $OUTPUT/Log
+		fi
+		#=================================================
+		
+		echo -e "${CYA}Please set the working directory for reading raw .bam files:${NC}"
+		DIR_dedup="${OUTPUT}/Align"
+		echo -e "${CYA}Modify the default input sample folder if needed, press <ENTER> to confirm:${NC}"
+		read -e -p "" -i "$DIR_dedup" DIR_dedup
+		echo -e "${GRE}Confirmed: $DIR_dedup${NC}"
+		cd $DIR_dedup
+
+			i=0;
+			while read line
+			do 
+			files[$i]="${line}"
+			((i++))
+			done < <(find -name "*.bam")
+			echo -e "${CYA}Current sample names are:${NC}"
+			for (( n=0;n<i;n++ ));do echo -e "${files[$n]}";done
+			
+			n=0;		
+			for INPUT in *.bam
+			do
+				echo -e "\n"
+				echo -e "${CYA}The processing BAM file is $INPUT${NC}" 
+				((n++));
+				CORE=$(echo ${INPUT%%_*});
+				echo -e "${CYA}Input found:$n${NC}"
+				echo -e "${CYA}Sample name is $CORE.${NC}"
+				samtools view -bq 10 -h ${INPUT} > $OUTPUT/Spikein/${CORE}_mm10_fil.bam
+				java -jar ${SOFTWARE}/picard.jar MarkDuplicates I=$OUTPUT/Spikein/${CORE}_mm10_fil.bam O=$OUTPUT/Spikein/${CORE}_mm10_picard.bam M=$OUTPUT/Spikein/picard_${CORE}.txt 
+			done
+		;;
+	"n")
+		echo -e "${CYA}Raw bam files processed escaped.${NC}"
+		;;
+	*)
+		echo -e "${YEL}Invalid entry, raw bam files processed escaped.${NC}"
+		;;
+esac
+#================================================================================
+CHOICE="y"
+echo -e "${CYA}Would you like to perform spikein bamcompare analysis  ? (y for yes or n for skip):${NC}"
+read -e -p "" -i $CHOICE CHOICE
+echo -e "${CYA}The choice is $CHOICE\n${NC}"
+
+case $CHOICE in
+	
+	"y")
+		Author="DJY"; SignDate="Dec 30 2020";
+		echo -e "$Author, $SignDate \n";
+		#=================================================
+		if [ ! -d $OUTPUT/Spikein/bamCompare ];then
+		  mkdir -p $OUTPUT/Spikein/bamCompare
+		fi
+		if [ ! -d $OUTPUT/Log ];then
+		  mkdir -p $OUTPUT/Log
+		fi
+		#=================================================
+		echo -e "${CYA}Please set the working directory for reading spikein dm3 .bam files:${NC}"
+		DIR_bamcomp="${OUTPUT}/Spikein/Align"
+		echo -e "${CYA}Modify the default input sample folder if needed, press <ENTER> to confirm:${NC}"
+		read -e -p "" -i "$DIR_bamcomp" DIR_bamcomp
+		echo -e "${GRE}Confirmed: $DIR_bamcomp${NC}"
+		cd $DIR_bamcomp
+
+			i=0;
+			while read line
+			do 
+			files[$i]="${line}"
+			((i++))
+			done < <(find -name "*.bam")
+			echo -e "${CYA}Current sample names are:${NC}"
+			for (( n=0;n<i;n++ ));do echo -e "${files[$n]}";done
+			
+			for i in *input_dm3.bam;do input=$(samtools flagstats ${i}|sed -n 5p);echo -e ${i%%_*}"\t"${input%%+*};done >input_tmp
+			for i in *treat_dm3.bam;do input=$(samtools flagstats ${i}|sed -n 5p);echo -e ${i%%_*}"\t"${input%%+*};done >treat_tmp
+			treat_min=$(cat treat_tmp |cut -f 2|sort -n|head -1)
+			input_min=$(cat input_tmp |cut -f 2|sort -n|head -1)
+			cat treat_tmp|cut -f 2|while read line;do echo "scale=2;"${treat_min}/${line}|bc -l;done >sf_treat
+			cat input_tmp|cut -f 2|while read line;do echo "scale=2;"${input_min}/${line}|bc -l;done >sf_input
+			name=$(cat treat_tmp |cut -f 1);for i in ${name[@]};do echo ${i%%-*}"_FE";done >name
+			paste name treat_tmp sf_treat input_tmp sf_input>list_sf
+			for i in *picard.bam;do samtools index ${i};done
+			awk '{print "bamCompare -b1 "$2"_mm10_picard.bam -b2 "$5"_mm10_picard.bam --operation ratio --scaleFactors "$4":"$7" --outFileFormat bigwig -o "$1".bw"}' list_sf|sh
+		;;
+	"n")
+		echo -e "${CYA}Spikein analysis escaped.${NC}"
+		;;
+	*)
+		echo -e "${YEL}Invalid entry, Spikein analysis escaped.${NC}"
+		;;
+esac
+#================================================================================
+CHOICE="y"
+echo -e "${CYA}Would you like to call peaks using MACS3? y for yes and n to skip:${NC}"
+read -e -p "" -i $CHOICE CHOICE
+echo -e "${GRE}The choice is $CHOICE\n${NC}"
+
+case $CHOICE in
+	
+	"y")
+
+		#Test_macs
+
+
+		V="ChIP-Seq MACS3 PEAKCALLING V2.4"; Author="RBY"; SignDate="Dec 16 2019";
+		echo "The version of this pipeline is: $V.";
+		echo -e "$Author, $SignDate \n";
+
+
+
+		#=================================================
+		if [ ! -d $OUTPUT/Peaks ];then
+		  mkdir -p $OUTPUT/Peaks
+		fi
+		if [ ! -d $OUTPUT/Log ];then
+		  mkdir -p $OUTPUT/Log
+		fi
+		#=================================================
+
+
+		#10 minutes per sample
+		echo -e "================================================\n"
+		echo -e "Welcome to the MACS3 peak calling procedure, it takes about 10 minutes per sample."
+
+
+		echo -e "${CYA}Please set the working directory for reading aligned .bam files:${NC}"
+		
+		DIR_MACS="${OUTPUT}/Align"
+		
+		echo -e "${CYA}Modify the default input sample folder if needed, press <ENTER> to confirm:${NC}"
+		read -e -p "" -i "$DIR_MACS" DIR_MACS
+		echo -e "${GRE}Confirmed: $DIR_MACS${NC}"
+		cd $DIR_MACS
+
+
+			i=0;
+			while read line
+			do 
+			files[$i]="${line}"
+			((i++))
+			done < <(find -name "*.bam")
+			echo -e "${CYA}Current sample names are:${NC}"
+			for (( n=0;n<i;n++ ));do echo -e "${files[$n]}";done
+			echo -e "${CYA}\nAre these files fit the rule?\n${NC}"
+			read -p  "Press <enter> to confirm or <Ctrl+C> to quit."
+			echo ""
+
+		CHOICE="yes"
+		echo -e "${CYA}Do you have input samples? (yes or no):${NC}"
+		read -e -p "" -i $CHOICE CHOICE
+		echo -e "${GRE}The choice is $CHOICE\n${CYA}"
+
+		case $CHOICE in
+			
+			"yes")
+				
+				
+
+				echo -e "================================================\n"
+				echo -e "${YEL}! ! ! Make sure your input sample(s) are named by adding identifier -input within the file name. \n${NC}"
+				echo -e "${YEL}! ! ! Make sure an underscore _ is there in the file name to separate sample information (genotype, input or treatment) with sequencing information (Lane, ID, format .etc).${NC}\n"
+				echo -e "Example: SAMPLE1_L2_XXXXXXX.bam, and corresponding input sample: SAMPLE1-input_L2_XXXXXXX.bam. " 
+				echo -e "================================================\n"
+				echo -e "${CYA}Do you want to call narrow peaks or broad peaks?${NC}\n"
+				echo -e "Narrow peaks: H2AZ, transcriptional factors, which has limited bound region; besides, H3K27ac, H3K4me1 and H3k4me3 are narrow too. \n"
+				echo -e "Broad peaks:H3K27me3, H3K9me3, H3K36me3... \n"
+				
+
+				PEAKCALLING="n"
+				echo -e "================================================\n"
+				echo -e "Peak-calling method: n: narrow, b: broad.\n"
+				echo -e "${CYA}Current method for peak calling is: $PEAKCALLING${NC}";
+				echo -e "${CYA}Enter the desired peak calling method by entering n or b and press <ENTER>:${NC}"
+				read  -e -p "" -i "$PEAKCALLING" PEAKCALLING
+				PEAKCALLING=$( echo "$PEAKCALLING" | tr -s  '[:upper:]'  '[:lower:]' )
+
+				echo -e "==================================================="
+				if [[ $PEAKCALLING == "n" ]]; then
+					echo -e "${GRE}Narrow peak calling will be applied to the samples${NC}"
+					PARAMETER="--bdg --gsize mm  --qvalue 0.01 --scale-to small --format BAMPE"
+					echo -e "${CYA}Recommended ATAC-SEQ parameter to center the cut sites:--format BAMPE or --nomodel --shift -100 --extsize 200${NC}"
+					echo -e "${CYA}Recommneded for nucleosome ChIP-Seq: Since the DNA wrapped on nucleosome is about 147bps, this option can be used: --nomodel --shift 37 --extsize 73${NC}"
+					echo -e "${CYA}Modify the current parameters for NarrowPeak Calling if required and press <ENTER>:${NC}"
+					read  -e -p "" -i "$PARAMETER" PARAMETER
+					echo -e "========================================================\n"
+					echo -e "${GRE}New parameter for NarrowPeak Calling is:\n$PARAMETER\n${NC}"
+					echo -e "========================================================\n"
+					echo -e "${YEL}ATTENTION! Peakcalling will be set in the background, do not interrupt with keyboard until all processes have been finished. After all processes have been finished, press <enter> to go to next module.${NC}"
+					read -p "Press <enter> to proceed peakcalling or <Ctrl+C> to quit."
+					
+				elif [[ $PEAKCALLING == "b" ]]; then
+					echo -e "${GRE}Broad peak calling will be applied to the samples${NC}"
+					PARAMETER="--bdg --gsize mm  --broad --scale-to small --format BAMPE"
+					echo -e "${CYA}Modify the current parameters for Broad Peak Calling if required and press <ENTER>:${NC}"
+					read  -e -p "" -i "$PARAMETER" PARAMETER
+					echo -e "========================================================\n"
+					echo -e "${GRE}New parameter for BroadPeak Calling is:\n$PARAMETER\n${NC}"
+					echo -e "========================================================"
+					echo -e  "${YEL}ATTENTION! Peakcalling will be set in the background, do not interrupt with keyboard until all processes have been finished. After all processes have been finished, press <enter> to go to next module.${NC}"
+					read -p "Press <enter> to proceed peakcalling or <Ctrl+C> to quit."
+					
+				else 
+					read -p "${RED}Invalid entry!!! Press <enter> to quit.${NC}"
+					exit 1
+				fi
+
+				CHROMESIZES="chr1\t195471971\nchr10\t130694993\nchr11\t122082543\nchr12\t120129022\nchr13\t120421639\nchr14\t124902244\nchr15\t104043685\nchr16\t98207768\nchr17\t94987271\nchr18\t90702639\nchr19\t61431566\nchr2\t182113224\nchr3\t160039680\nchr4\t156508116\nchr5\t151834684\nchr6\t149736546\nchr7\t145441459\nchr8\t129401213\nchr9\t124595110\nchrMT\t16299\nchrX\t171031299\nchrY\t91744698\nchrJH584299.1\t953012\nchrGL456233.1\t336933\nchrJH584301.1\t259875\nchrGL456211.1\t241735\nchrGL456350.1\t227966\nchrJH584293.1\t207968\nchrGL456221.1\t206961\nchrJH584297.1\t205776\nchrJH584296.1\t199368\nchrGL456354.1\t195993\nchrJH584294.1\t191905\nchrJH584298.1\t184189\nchrJH584300.1\t182347\nchrGL456219.1\t175968\nchrGL456210.1\t169725\nchrJH584303.1\t158099\nchrJH584302.1\t155838\nchrGL456212.1\t153618\nchrJH584304.1\t114452\nchrGL456379.1\t72385\nchrGL456216.1\t66673\nchrGL456393.1\t55711\nchrGL456366.1\t47073\nchrGL456367.1\t42057\nchrGL456239.1\t40056\nchrGL456213.1\t39340\nchrGL456383.1\t38659\nchrGL456385.1\t35240\nchrGL456360.1\t31704\nchrGL456378.1\t31602\nchrGL456389.1\t28772\nchrGL456372.1\t28664\nchrGL456370.1\t26764\nchrGL456381.1\t25871\nchrGL456387.1\t24685\nchrGL456390.1\t24668\nchrGL456394.1\t24323\nchrGL456392.1\t23629\nchrGL456382.1\t23158\nchrGL456359.1\t22974\nchrGL456396.1\t21240\nchrGL456368.1\t20208\nchrJH584292.1\t14945\nchrJH584295.1\t1976"
+
+
+
+				echo -e "===================================================\n"
+
+
+				n=0;
+				
+				for INPUT in *-input*.bam
+				do
+					echo -e "\n"
+					echo -e "${CYA}The processing BAM file is $INPUT${NC}"
+					if [[ $INPUT == *"input"* ]]; then 
+						((n++));
+						#the file is the input sample, find its paired CHIP sample by substring before "_"and "input" removed.
+						CORE=$(echo ${INPUT%%_*}|sed s#-input##);
+						echo -e "${CYA}Input found:$n${NC}"
+						#CHIP=$(echo $INPUT|sed s#-input##);
+						echo -e "${CYA}Sample name is $CORE, it will be used for downstream annotation.${NC}"
+						#==================================
+						i=0
+						while read line
+						do
+							hit_array[ $i ]="$line"
+							((i++))
+						done < <(find . -name "*$CORE*bam")
+						
+						
+						#Test whether it's input or treatment sample.
+						if [[ ${hit_array[0]} != *"input"* ]]; then
+							TREATMENT=${hit_array[0]}
+							else
+							TREATMENT=${hit_array[1]}
+						fi
+						
+						echo -e "${CYA}The treatment sample is: $TREATMENT${NC}"
+						echo -e "${CYA}The corresponding input sample is: $INPUT${NC}"
+						#==================================
+						case $PEAKCALLING in 
+							n)
+								echo -e "${CYA}$CORE narrow peak calling...\n${NC}"
+								if [ ! -d $OUTPUT/Peaks/PEAKCALLING_$CORE ];then
+									mkdir -p $OUTPUT/Peaks/PEAKCALLING_$CORE
+								fi
+								
+								macs3 callpeak $PARAMETER -t $TREATMENT -c $INPUT -n $CORE --outdir $OUTPUT/Peaks/PEAKCALLING_$CORE --bdg 2>&1 | tee $OUTPUT/Log/Peaks.$CORE.log
+								cp $OUTPUT/Log/Peaks.$CORE.log $OUTPUT/Peaks/PEAKCALLING_$CORE
+								echo -e "Generating fold-enrichment track for $CORE..."
+								macs3 bdgcmp -t $OUTPUT/Peaks/PEAKCALLING_$CORE/${CORE}_treat_pileup.bdg -c $OUTPUT/Peaks/PEAKCALLING_$CORE/${CORE}_control_lambda.bdg -o $OUTPUT/Peaks/PEAKCALLING_$CORE/${CORE}_FE.bdg -m FE
+								
+								macs3 bdgcmp -t $OUTPUT/Peaks/PEAKCALLING_$CORE/${CORE}_treat_pileup.bdg -c $OUTPUT/Peaks/PEAKCALLING_$CORE/${CORE}_control_lambda.bdg -o $OUTPUT/Peaks/PEAKCALLING_$CORE/${CORE}_sub.bdg -m subtract
+								echo -e "fold-enrichment track generated!"
+								;;
+							b)
+								echo -e "${CYA}$CORE broad peak calling...\n${NC}"
+								if [ ! -d $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad ];then
+									mkdir -p $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad
+								fi
+								macs3 callpeak $PARAMETER -t $TREATMENT -c $INPUT -n ${CORE}_Broad --outdir $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad --bdg 2>&1 | tee $OUTPUT/Log/Peaks.$CORE.log
+								cp $OUTPUT/Log/Peaks.$CORE.log $OUTPUT/Peaks/PEAKCALLING_$CORE
+								echo -e "Generating fold-enrichment track for $CORE..."
+								macs3 bdgcmp -t $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad/${CORE}_Broad_treat_pileup.bdg -c $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad/${CORE}_Broad_control_lambda.bdg -o $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad/${CORE}_Broad_FE.bdg -m FE
+								
+								macs3 bdgcmp -t $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad/${CORE}_Broad_treat_pileup.bdg -c $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad/${CORE}_Broad_control_lambda.bdg -o $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad/${CORE}_Broad_sub.bdg -m subtract
+								echo -e "fold-enrichment track generated!"
+								;;
+						esac
+
+						cd $OUTPUT/Peaks/PEAKCALLING_$CORE*
+						#Check availability of chrom.sizes file
+						if [ ! -f "chrom.sizes" ]; then
+							echo -e $CHROMESIZES > ./chrom.sizes
+									echo "chrom.sizes generated!"
+						fi
+						#Add 'chr' prefix
+								#convert bdg to bw for igv visualization.
+						for FILE in *bdg
+							do
+							echo -e "Converting bedGraph to bw for visualizaiton...: ${FILE::-4}"
+							cat $FILE |sed -e 's/^/chr/' > Chr_$FILE
+							mv -f Chr_$FILE $FILE
+							$APP_PATH/bedGraphToBigWig ${FILE::-4}.bdg chrom.sizes ${FILE::-4}.bw
+						done
+						#Add 'chr' prefix
+						for FILE in *Peak
+							do
+							cat $FILE |sed -e 's/^/chr/' > Chr_$FILE
+							mv -f Chr_$FILE $FILE
+						done
+						cd $DIR_MACS
+					fi
+				done	
+
+
+				echo -e "${CYA}Time elapsed since peakcalling:${NC}"
+				displaytime $SECONDS
+
+				echo -e "${GRE}\nDone.${NC}"
+
+
+			;;
+			
+			"no")
+			
+				echo -e "${CYA}Peak calling without input samples...${NC}"
+				echo -e "================================================\n"
+
+				echo -e "${CYA}Do you want to call narrow peaks or broad peaks? \n${NC}"
+				echo -e "Narrow peaks: H2AZ, transcriptional factors, which has limited bound region; besides, H3K27ac, H3K4me1 and H3k4me3 are narrow too. \n"
+				echo -e "Broad peaks:H3K27me3, H3K9me3, H3K36me3... \n"
+
+				PEAKCALLING="n"
+				echo -e "================================================\n"
+				echo -e "Peak-calling method: n: narrow, b: broad.\n"
+				echo -e "${CYA}Current method for peak calling is: $PEAKCALLING"${NC};
+				
+				if [ -f *.shifted* ]; then
+					echo "Shifted bed files detected in alignment folder, ATAC-Seq parameter applied!"
+					PEAKCALLING="n"
+					ATAC_TOGGLE="TURE"
+				else
+					ATAC_TOGGLE="DEFAULT"
+					echo -e "${CYA}Recommended ATAC-SEQ parameter to center the cut sites: --nomodel --shift -100 --extsize 200${NC}"
+					echo -e "${CYA}Recommneded for nucleosome ChIP-Seq: Since the DNA wrapped on nucleosome is about 147bps, this option can be used: --nomodel --shift 37 --extsize 73${NC}"
+					echo -e "${CYA}Enter the desired peak calling method by entering n or b and press <ENTER>:${NC}"
+					read  -e -p "" -i "$PEAKCALLING" PEAKCALLING
+					PEAKCALLING=$( echo "$PEAKCALLING" | tr -s  '[:upper:]'  '[:lower:]' )
+				fi
+				echo -e "==================================================="
+				if [[ $PEAKCALLING == "n" ]]; then
+					echo -e "${GRE}Narrow peak calling will be applied to the samples${NC}"
+					PARAMETER="--bdg --gsize mm  --qvalue 0.01 --call-summits --scale-to small --format BAMPE"
+					echo -e "${CYA}Modify the current parameters for NarrowPeak Calling if required and press <ENTER>:${NC}"
+					read  -e -p "" -i "$PARAMETER" PARAMETER
+					echo -e "========================================================\n"
+					echo -e "${GRE}New parameter for NarrowPeak Calling is:\n$PARAMETER\n${NC}"
+					echo -e "========================================================\n"
+					read -p "Press <enter> to confirm or <Ctrl+C> to quit."
+					
+				elif [[ $PEAKCALLING == "b" ]]; then
+					echo -e "${GRE}Broad peak calling will be applied to the samples${NC}"
+					PARAMETER="--bdg --gsize mm  --broad --BROAD-CUTOFF 0.1 --call-summits --scale-to small --format BAMPE"
+					echo -e "${CYA}Modify the current parameters for NarrowPeak Calling if required and press <ENTER>:${NC}"
+					read  -e -p "" -i "$PARAMETER" PARAMETER
+					echo -e "========================================================\n"
+					echo -e "${GRE}New parameter for BroadPeak Calling is:\n$PARAMETER\n${NC}"
+					echo -e "========================================================"
+					read -p "Press <enter> to confirm or <Ctrl+C> to quit."
+					
+				else 
+					read -p "${RED}Invalid entry!!! Press <enter> to quit.${NC}"
+					exit 1
+				fi
+
+				CHROMESIZES="chr1\t195471971\nchr10\t130694993\nchr11\t122082543\nchr12\t120129022\nchr13\t120421639\nchr14\t124902244\nchr15\t104043685\nchr16\t98207768\nchr17\t94987271\nchr18\t90702639\nchr19\t61431566\nchr2\t182113224\nchr3\t160039680\nchr4\t156508116\nchr5\t151834684\nchr6\t149736546\nchr7\t145441459\nchr8\t129401213\nchr9\t124595110\nchrMT\t16299\nchrX\t171031299\nchrY\t91744698\nchrJH584299.1\t953012\nchrGL456233.1\t336933\nchrJH584301.1\t259875\nchrGL456211.1\t241735\nchrGL456350.1\t227966\nchrJH584293.1\t207968\nchrGL456221.1\t206961\nchrJH584297.1\t205776\nchrJH584296.1\t199368\nchrGL456354.1\t195993\nchrJH584294.1\t191905\nchrJH584298.1\t184189\nchrJH584300.1\t182347\nchrGL456219.1\t175968\nchrGL456210.1\t169725\nchrJH584303.1\t158099\nchrJH584302.1\t155838\nchrGL456212.1\t153618\nchrJH584304.1\t114452\nchrGL456379.1\t72385\nchrGL456216.1\t66673\nchrGL456393.1\t55711\nchrGL456366.1\t47073\nchrGL456367.1\t42057\nchrGL456239.1\t40056\nchrGL456213.1\t39340\nchrGL456383.1\t38659\nchrGL456385.1\t35240\nchrGL456360.1\t31704\nchrGL456378.1\t31602\nchrGL456389.1\t28772\nchrGL456372.1\t28664\nchrGL456370.1\t26764\nchrGL456381.1\t25871\nchrGL456387.1\t24685\nchrGL456390.1\t24668\nchrGL456394.1\t24323\nchrGL456392.1\t23629\nchrGL456382.1\t23158\nchrGL456359.1\t22974\nchrGL456396.1\t21240\nchrGL456368.1\t20208\nchrJH584292.1\t14945\nchrJH584295.1\t1976"
+
+
+
+				echo -e "===================================================\n"
+
+
+				n=0;
+				cd $DIR_MACS
+				if [ $ATAC_TOGGLE== "TURE" ]; then
+					Aligned="*.shifted*"
+				else
+					Aligned="*.bam"
+				fi
+				for ALIGNMENT in $Aligned 
+				do 
+					echo -e "\n"
+					echo -e "${CYA}The processing alignment file is $ALIGNMENT${NC}"
+					
+						#Get core info by substring before "_".
+						CORE=$(echo ${ALIGNMENT%%_*});						
+						echo -e "${CYA}Sample name is $CORE, it will be used for downstream annotation.${NC}"
+						#==================================		
+						case $PEAKCALLING in 
+							n)
+								echo -e "${CYA}$CORE narrow peak calling...\n${NC}"
+								if [ ! -d $OUTPUT/Peaks/PEAKCALLING_$CORE ];then
+									mkdir -p $OUTPUT/Peaks/PEAKCALLING_$CORE
+								fi
+								
+								macs3 callpeak $PARAMETER -t $ALIGNMENT -n $CORE --outdir $OUTPUT/Peaks/PEAKCALLING_$CORE --bdg 2>&1 | tee $OUTPUT/Log/Peaks.$CORE.log
+								cp $OUTPUT/Log/Peaks.$CORE.log $OUTPUT/Peaks/PEAKCALLING_$CORE 
+								echo -e "Generating fold-enrichment track for $CORE..."
+								macs3 bdgcmp -t $OUTPUT/Peaks/PEAKCALLING_$CORE/${CORE}_treat_pileup.bdg -c $OUTPUT/Peaks/PEAKCALLING_$CORE/${CORE}_control_lambda.bdg -o $OUTPUT/Peaks/PEAKCALLING_$CORE/${CORE}_FE.bdg -m FE
+								
+								macs3 bdgcmp -t $OUTPUT/Peaks/PEAKCALLING_$CORE/${CORE}_treat_pileup.bdg -c $OUTPUT/Peaks/PEAKCALLING_$CORE/${CORE}_control_lambda.bdg -o $OUTPUT/Peaks/PEAKCALLING_$CORE/${CORE}_sub.bdg -m subtract
+								echo -e "fold-enrichment track generated!"
+								;;
+							b)
+								echo -e "${CYA}$CORE broad peak calling...\n${NC}"
+								if [ ! -d $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad ];then
+									mkdir -p $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad
+								fi
+								macs3 callpeak $PARAMETER -t $ALIGNMENT -n ${CORE}_Broad --outdir $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad --bdg 2>&1 | tee $OUTPUT/Log/Peaks.$CORE.log
+								cp $OUTPUT/Log/Peaks.$CORE.log $OUTPUT/Peaks/PEAKCALLING_$CORE 
+								echo -e "Generating fold-enrichment track for $CORE..."
+								macs3 bdgcmp -t $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad/${CORE}_Broad_treat_pileup.bdg -c $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad/${CORE}_Broad_control_lambda.bdg -o $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad/${CORE}_Broad_FE.bdg -m FE
+								
+								macs3 bdgcmp -t $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad/${CORE}_Broad_treat_pileup.bdg -c $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad/${CORE}_Broad_control_lambda.bdg -o $OUTPUT/Peaks/PEAKCALLING_${CORE}_Broad/${CORE}_Broad_sub.bdg -m subtract
+								echo -e "fold-enrichment track generated!"
+								;;
+						esac
+
+						cd $OUTPUT/Peaks/PEAKCALLING_$CORE*
+							#Check availability of chrom.sizes file
+							if [ ! -f "chrom.sizes" ]; then
+								echo -e $CHROMESIZES > ./chrom.sizes
+										echo "chrom.sizes generated!"
+							fi
+									#Add 'chr' prefix
+									#convert bdg to bw for igv visualization.
+							for FILE in *bdg
+								do
+								echo -e "Converting bedGraph to bw for visualizaiton...: ${FILE::-4}"
+								cat $FILE |sed -e 's/^/chr/' > Chr_$FILE
+								mv -f Chr_$FILE $FILE
+								$APP_PATH/bedGraphToBigWig ${FILE::-4}.bdg chrom.sizes ${FILE::-4}.bw
+							done
+							#Add 'chr' prefix
+							for FILE in *Peak
+								do
+								cat $FILE |sed -e 's/^/chr/' > Chr_$FILE
+								mv -f Chr_$FILE $FILE
+							done
+						cd $DIR_MACS
+				done
+				
+				
+				echo -e "${CYA}Time elapsed since peakcalling:${NC}"
+				displaytime $SECONDS
+
+				echo -e "${GRE}\nDone.${NC}"	
+			;;	
+				
+			*)
+				echo -e "${RED}Invalid entry, quit macs3 peak calling. Please try again.${NC}"
+				;;
+		esac
+
+	;;
+	
+	"n")
+		echo -e "${CYA}Peak calling escaped.${NC}"
+		;;
+	*)
+		echo -e "${YEL}Invalid entry, peak calling escaped.${NC}"
+		;;
+	esac
+
+
+
+
+
+
+
+
+#================================================================================
+#================================================================================
+#================================================================================
+
+#Differential peak analysis
+#! /bin/bash
+CHOICE="y"
+while :
+do	
+	echo -e "${CYA}Would you like to perform differential analysis using MACS3 bdgdiff? (y or n)${NC}"
+	read -e -p "" -i $CHOICE CHOICE
+	echo -e "${GRE}The choice is $CHOICE\n${NC}"	
+	case $CHOICE in
+		"y")
+		V="ChIP-Seq MACS3 differential peak analysis V2.2"; Author="RBY"; SignDate="Dec 15 2019";
+		echo "The version of this pipeline is: $V.";
+		echo -e "$Author, $SignDate \n";
+
+		echo "=======================================================ATTENTION============================================================"
+		echo -e "${YEL}1) The subfolder should be named as PEAKCALLING_xxxxxxx, the subfolders should contain .bdg bedgraph files generated by MACS3${NC}"
+		echo -e "${YEL}2) Log file generated by MACS3 should be either in $OUTPUT/Log or peak subfoler, which is needed to set analysis mode.${NC}"
+		read -p "Press <enter> to confirm or <Ctrl+C> to quit."
+		DIR_DIFF="$OUTPUT/Peaks/"
+		echo -e "${CYA}Modify the default folder if needed, press <ENTER> to confirm:${NC}"
+		read -e -p "" -i "$DIR_DIFF" DIR_DIFF
+		echo -e "${GRE}Confirmed: $DIR_DIFF${NC}"
+		
+		cd $DIR_DIFF
+
+
+		
+
+		i=0; 
+		while read line
+		do
+			PEAK_array[ $i ]="${line}"
+			PEAK_array_core[$i]="${line#*PEAKCALLING_}"
+			PEAK_array_show[$i]="$i.${line#*PEAKCALLING_}"
+			#Note: these arrays contain folder names, not file name.
+			((i++))
+		done < <(find -name "PEAKCALLING*" -type d)
+
+
+		#FOR MAINTENANCE PURPOSE
+		#echo -e "Contrast array, item 1: ${PEAK_array[1]}"
+		#echo -e "Contrast array core, item 1: ${PEAK_array_core[1]}"
+		#echo -e "Contrast array for show, item 1: ${PEAK_array_show[1]}"
+		#echo -e "Contrast array, full: ${PEAK_array[@]}"
+		#echo -e "Contrast array core, full: ${PEAK_array_core[@]}"
+		#echo -e "Contrast array for show, full: ${PEAK_array_show[@]}"
+		#echo -e "i is $i"
+		#FOR MAINTENANCE PURPOSE
+
+
+		echo -e "${CYA}\nPeaks found in the current workspace:${NC}"
+			for (( n=0;n<$i;n++ ));do echo -e "${PEAK_array_show[$n]}";done
+		echo -e "==================================================\n"
+		#Designate the first peak in the contrast.
+		CONTRAST_1=0
+		echo -e "${CYA}Please choose the FIRST peak file to be compared by enter the serial number:${NC}"
+		read -e -p "" -i $CONTRAST_1 CONTRAST_1
+		if [ $CONTRAST_1 -gt $((i-1)) ]; then echo -e "${RED}Invalid entry! Serial number out of bound!${NC}";exit 1;fi
+		echo -e "${GRE}$CONTRAST_1:${PEAK_array_core[$CONTRAST_1]} has been chosen for contrast 1 of 2\n${NC}"
+
+		#Designate the second peak in the contrast.
+
+
+		let CONTRAST_2=$i-$CONTRAST_1
+		echo -e "${CYA}Please choose the SECOND peak file to be compared by enter the serial number:${NC}"
+		read -e -p "" -i $CONTRAST_2 CONTRAST_2
+		if [ $CONTRAST_2 -gt $((i-1)) ]; then echo -e "${RED}Invalid entry! Serial number out of bound!${NC}";exit 1;fi
+		echo -e "${GRE}$CONTRAST_2:${PEAK_array_core[$CONTRAST_2]} has been chosen for contrast 2 of 2\n${NC}"
+		echo -e "==================================================\n"
+		echo -e "${GRE}\nThe contrast to be established is \"${PEAK_array_core[$CONTRAST_1]}\" vs \"${PEAK_array_core[$CONTRAST_2]}\"\n${NC}"
+		read -p "Press <enter> to confirm or <Ctrl+C> to quit."
+
+		Log1="${DIR_DIFF}/${PEAK_array[$CONTRAST_1]}/Peaks.${PEAK_array_core[$CONTRAST_1]}.log"
+		Log2="${DIR_DIFF}/${PEAK_array[$CONTRAST_2]}/Peaks.${PEAK_array_core[$CONTRAST_2]}.log"
+
+
+		echo -e "${YEL}TEST START=================================="
+		echo -e "DIR_DIFF: ${DIR_DIFF}"
+		echo -e "PEAK_array[contrast_1]: ${PEAK_array[$CONTRAST_1]}"
+		echo -e "PEAK_array_core[contrast_1]: ${PEAK_array_core[$CONTRAST_1]}"
+		echo -e "Path to the first log file:${DIR_DIFF}/${PEAK_array[$CONTRAST_1]}/${PEAK_array_core[$CONTRAST_1]}.log "
+		echo -e "Log1 variable is : $Log1"
+		echo -e "Log2 variable is : $Log2"
+		echo -e "TEST END==================================${NC}"
+
+
+		#Get scaling information from the log file.
+		SCALE_MODE_1="$(grep -oP "(?<=scaled towards )[^ ]+" $Log1)"
+		SCALE_MODE_2="$(grep -oP "(?<=scaled towards )[^ ]+" $Log2)"
+		echo -e "==================================================\n"
+		if [ $SCALE_MODE_1 = $SCALE_MODE_2  ];then
+			echo -e "${CYA}\nUsing \"scale-to $SCALE_MODE_1\" mode for peak comparison...${NC}"
+		else
+			echo -e "${RED}Scale mode for sample 1 \"$SCALE_MODE_1\" does not match scale mode for sample 2 \"$SCALE_MODE_2\"! Please call peaks with same scale method and retry!${NC}"
+			exit 1
+		fi
+
+		#Peak 1 
+		echo -e "${CYA}\n${PEAK_array_core[$CONTRAST_1]}${NC}"
+		Frag_treatment_1="$(egrep "after filtering in treatment" $Log1)"
+		Frag_treatment_1="${Frag_treatment_1#*treatment: *}"
+		echo -e "${CYA}Depths of treatment fragments are $Frag_treatment_1${NC}"
+		Switch_Ctrl_1="$(egrep "control file" $Log1)"
+		Switch_Ctrl_1="${Switch_Ctrl_1#*= *}"
+		if [ "$Switch_Ctrl_1" == "None" ]; then Frag_control_1=$Frag_treatment_1; 
+		else
+		Frag_control_1="$(egrep "after filtering in control" $Log1)"
+		Frag_control_1="${Frag_control_1#*control: *}"
+		echo -e "${CYA}Depths of control fragments are $Frag_control_1${NC}"
+		fi
+		
+		
+
+		#Peak 2
+		echo -e "${CYA}\n${PEAK_array_core[$CONTRAST_2]}${NC}"
+		Frag_treatment_2="$(egrep "after filtering in treatment" $Log2)"
+		Frag_treatment_2="${Frag_treatment_2#*treatment: *}"
+		echo -e "${CYA}Depths of treatment fragments are $Frag_treatment_2${NC}"
+		Switch_Ctrl_2="$(egrep "control file" $Log2)"
+		Switch_Ctrl_2="${Switch_Ctrl_2#*= *}"
+		if [ "$Switch_Ctrl_2" == "None" ]; then Frag_control_2=$Frag_treatment_2; 
+		else
+		Frag_control_2="$(egrep "after filtering in control" $Log2)"
+		Frag_control_2="${Frag_control_2#*control: *}"
+		echo -e "${CYA}Depths of control fragments are $Frag_control_2${NC}"
+		fi
+		
+		
+
+		#Determine effective depths
+		if [ $SCALE_MODE_1 = "smaller" ];then
+			#echo -e "\nRunning macs3 bdgdiff with sequencing depth scaled to small"
+			if [ $Frag_treatment_1 -lt $Frag_control_1 ];then Depth_1=$Frag_treatment_1;else Depth_1=$Frag_control_1;fi
+			if [ $Frag_treatment_2 -lt $Frag_control_2 ];then Depth_2=$Frag_treatment_2;else Depth_2=$Frag_control_2;fi
+		elif [ $SCALE_MODE_1 = "larger" ];then
+			#echo -e "\nRunning macs3 bdgdiff with sequencing depth scaled to large"
+			if [ $Frag_treatment_1 -gt $Frag_control_1 ];then Depth_1=$Frag_treatment_1;else Depth_1=$Frag_control_1;fi
+			if [ $Frag_treatment_2 -gt $Frag_control_2 ];then Depth_2=$Frag_treatment_2;else Depth_2=$Frag_control_2;fi
+		fi
+
+		echo -e "${GRE}Effective sequencing depths of ${PEAK_array_core[$CONTRAST_1]} are $Depth_1${NC}"
+		echo -e "${GRE}Effective sequencing depths of ${PEAK_array_core[$CONTRAST_2]} are $Depth_2${NC}"
+		echo ""
+
+
+		#Differential binding regions
+		if [ ! -d $(pwd)/Diff_${PEAK_array_core[$CONTRAST_1]}_vs_${PEAK_array_core[$CONTRAST_2]} ]
+		then
+		  mkdir -p $(pwd)/Diff_${PEAK_array_core[$CONTRAST_1]}_vs_${PEAK_array_core[$CONTRAST_2]}
+		fi
+
+		MINLEN=200
+		MAXGAP=100
+		CUTOFF=3
+		echo -e "${CYA}Please designate the Minimum Length (l) of differential region:${NC}"
+		read -e -p "" -i $MINLEN MINLEN
+		echo ""
+		echo -e "${CYA}Please designate the Maximum Gap (g) to merge nearby differential regions:${NC}"
+		echo -e "${YEL}NOTE:Maxium Gap should be smaller than minimum length:${CYA}"
+		read -e -p "" -i $MAXGAP MAXGAP
+		echo ""
+		echo -e "${CYA}Please designate the logLR cutoff:${NC}"
+		read -e -p "" -i $CUTOFF CUTOFF
+
+		echo -e "${GRE}Parameters for differential peak calling:${NC}\nMINLEN is $MINLEN\nMAXGAP is $MAXGAP\nLogLR cutoff is $CUTOFF\nFull command is macs3 bdgdiff --t1 ${PEAK_array[$CONTRAST_1]}/${PEAK_array_core[$CONTRAST_1]}_treat_pileup.bdg --c1 ${PEAK_array[$CONTRAST_1]}/${PEAK_array_core[$CONTRAST_1]}_control_lambda.bdg --t2 ${PEAK_array[$CONTRAST_2]}/${PEAK_array_core[$CONTRAST_2]}_treat_pileup.bdg --c2 ${PEAK_array[$CONTRAST_2]}/${PEAK_array_core[$CONTRAST_2]}_control_lambda.bdg --d1 $Depth_1 --d2 $Depth_2  --max-gap $MAXGAP --min-len $MINLEN --cutoff $CUTOFF --o-prefix ${PEAK_array_core[$CONTRAST_1]}.C1_vs_${PEAK_array_core[$CONTRAST_2]}.C2 --outdir  Diff_${PEAK_array_core[$CONTRAST_1]}_vs_${PEAK_array_core[$CONTRAST_2]}\nThe End." > $OUTPUT/Log/DiffPeaks.${PEAK_array_core[$CONTRAST_1]}vs${PEAK_array_core[$CONTRAST_2]}.log
+
+		echo -e "${CYA}Starting differential peak analysis...${NC}"
+		macs3 bdgdiff --t1 ${PEAK_array[$CONTRAST_1]}/${PEAK_array_core[$CONTRAST_1]}_treat_pileup.bdg --c1 ${PEAK_array[$CONTRAST_1]}/${PEAK_array_core[$CONTRAST_1]}_control_lambda.bdg --t2 ${PEAK_array[$CONTRAST_2]}/${PEAK_array_core[$CONTRAST_2]}_treat_pileup.bdg --c2 ${PEAK_array[$CONTRAST_2]}/${PEAK_array_core[$CONTRAST_2]}_control_lambda.bdg --d1 $Depth_1 --d2 $Depth_2  --max-gap $MAXGAP --min-len $MINLEN --cutoff $CUTOFF --o-prefix ${PEAK_array_core[$CONTRAST_1]}.C1_vs_${PEAK_array_core[$CONTRAST_2]}.C2 --outdir Diff_${PEAK_array_core[$CONTRAST_1]}_vs_${PEAK_array_core[$CONTRAST_2]}
+
+		#Peak annotation
+		#Add 'chr' prefix
+		echo -e "Processing .bed files for downstream analysis in R... "
+		cd Diff_${PEAK_array_core[$CONTRAST_1]}_vs_${PEAK_array_core[$CONTRAST_2]}
+		for FILE in *.bed
+		do
+			#Remove the first line of none-standard info from the bed file.
+			tail -n +2 $FILE > Chr_$FILE && mv -f Chr_$FILE $FILE
+		done
+
+		
+
+		echo -e "${CYA}Time elapsed since analysis:${NC}"
+		displaytime $SECONDS
+		;;
+		"n")
+		echo -e "${CYA}differential analysis escaped.${NC}"
+		exit 0 
+		;;
+	*)
+		echo -e "${YEL}Invalid entry, differential analysis escaped.${NC}"
+		;;
+	esac
+done
+
+
+
+echo -e "${GRE}Done!\n${NC}"
